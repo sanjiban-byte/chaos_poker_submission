@@ -1,4 +1,4 @@
-# Chaos Poker — Bot Submission
+# Chaos Poker Bot Submission
 
 ## Name
 Sanjiban Paul 
