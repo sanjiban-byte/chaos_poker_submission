@@ -88,6 +88,7 @@ confident the equity difference is.
 
 ### Tradeoffs
 
+<<<<<<< HEAD
 The bot plays its equity honestly and does not bluff, balance ranges, or model
 individual opponents' tendencies - every opponent is treated as holding a
 uniformly random hand. This keeps the approach robust and hard to get wrong,
@@ -119,3 +120,14 @@ official harness, so results are relative to this engine and the opponent pool
 rather than absolute. It was useful mainly for confirming that decisions stay
 within the time limit under multi-opponent load and for comparing win-rates
 across opponent counts. 
+=======
+- **Speed vs. accuracy**: rollout counts are tuned to stay well within the 10 ms wall-clock limit. Action decisions (1200 rollouts × 5 opponents = most expensive path) complete in ~3–5 ms at -O2 on modern hardware, hence safe to run it in simpler systems. 
+- **Pre-flop categories vs. pure MC**: the pre-flop tiers ensure premium hands build large pots and trash hands fold cost-free, which is the dominant win-rate driver in multi-player games where pre-flop all-ins frequently decide outcomes.
+- **Vote wager sizing**: wagers scale with confidence rather than being fixed, which avoids the chip-bleed of paying aggressively to redraw boards where the equity difference is marginal.
+
+### What I'd Try Differently With More Time 
+
+The natural next step would be to replace the Monte Carlo equity estimator with a trained value network, like Deep CFR(already exists for standard poker bots), where a neural network approximates the counterfactual regret values and the policy is derived from those approximations. This would handle opponent modelling within itself (since the network sees betting patterns, not just cards) and would handle this variant-specific mechanics (swap cascades, vote history) as part of the state representation.
+
+
+>>>>>>> a21c0f176d3ad21e43d571b427e15a40b61e97b9
