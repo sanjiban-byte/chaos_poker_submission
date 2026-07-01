@@ -2,7 +2,7 @@
 
 ## Name
 
-Sanjiban Paul 
+Sanjiban Paul
 
 ---
 
@@ -40,33 +40,82 @@ Example match via the test harness:
 
 ## Strategy
 
-The bot uses **Monte Carlo equity estimation** as its decision core, extended with pre-flop hand categorisation and confidence-scaled vote wagering. No offline training or pre-computed tables are required; all computation happens at decision time within the 10 ms limit.
+The bot uses **Monte Carlo equity estimation** as its decision core, extended
+with pre-flop hand categorisation and confidence-scaled vote wagering. No
+offline training or pre-computed tables are required; all computation happens at
+decision time within the 10 ms limit.
 
 ### Betting (`ACTION_PROMPT`)
 
-1200 Monte Carlo rollouts are run per decision. Each rollout randomly assigns hole cards to active opponents and completes the board, then evaluates all hands using an exhaustive best-5-of-7 evaluator (all 21 combinations). The resulting win fraction is the equity estimate.
+Monte Carlo rollouts are run per decision. Each rollout randomly assigns hole
+cards to active opponents and completes the board, then evaluates all hands
+using an exhaustive best-5-of-7 evaluator (all 21 combinations). The resulting
+win fraction is the equity estimate.
 
-Pre-flop, hole cards are classified into five tiers (premium: JJ+, AK, AQ; strong: 77–TT, A8–AT, KQ–KT; playable: small pairs, suited connectors; marginal; trash). This controls the raise threshold:
-- Premium hands raise at 50%+ equity threshold, 1.5× pot sizing, and never fold to small raises
-- Trash hands need 100% equity to raise pre-flop (never raise), and fold to any raise
-- Post-flop: raise threshold is 62% equity, sizing 1.5× pot
+The number of rollouts is bounded by a **per-decision time budget** rather than
+a fixed count. Rollouts run in batches until the budget is spent, and the
+decision is made on the equity estimate gathered by then. This keeps every
+decision inside the 10 ms limit regardless of how many opponents are in the
+hand (each additional opponent makes a rollout more expensive, since another
+hand has to be dealt and evaluated).
 
-Pot commitment is tracked: if a player has already invested 35%+ of their stack in the current betting round, the fold threshold is loosened (pot odds − 5%) to avoid giving up committed equity.
+Equity is compared against the pot odds being offered:
 
-### Swap (`SWAP_PROMPT`)
+- **Call** when equity exceeds the price being laid.
+- **Raise** (1.5x pot, or half pot as a fallback) when equity is well ahead of
+  that price.
+- **Fold** otherwise.
 
-300 rollouts are run for three scenarios: keeping both cards, replacing card 0, replacing card 1. The bot swaps whichever card produces the largest equity gain, but only if that gain clears a cost-scaled threshold — `max(3%, 1.2 × cost / stack)`. This avoids burning chips on marginal swaps and protects short stacks from swap-bleeding.
+Pre-flop, a hand-strength category (premium pairs and high broadway hands down
+to trash) shifts the aggression thresholds, and pot commitment is tracked so the
+bot does not fold a hand it is already priced into.
 
-### Vote (`VOTE_PROMPT`)
+### Swaps (`SWAP_PROMPT`)
 
-1200 rollouts are run twice: once with the full current board fixed, and once with only the pre-street community cards fixed (simulating a random redraw of the current street). The bot votes YES to keep if the current board is better, NO to redraw otherwise.
+For each of the two hole cards, the bot re-estimates equity as if that card were
+replaced (an average unknown card), and picks the better of the two swaps. It
+swaps only when the expected equity gain exceeds a threshold scaled to the swap
+cost as a fraction of the current stack, so paying to swap has to be worth it.
+Otherwise it stays.
 
-600 rollouts was tried earlier but 1200 performs better as vote direction noise is reduced. 
+### Votes (`VOTE_PROMPT`)
 
-Wager sizing scales with confidence: when the equity differential exceeds 10%, up to 12.5% of the stack is wagered; below that the wager is capped at 5%. This concentrates chip spending on high-conviction votes and avoids chip-bleed on borderline decisions.
+For the community-card vote, the bot compares its equity on the **current**
+board against its equity on a **re-simulated redraw** of the current street. It
+votes YES (keep) on boards that favour it and NO (redraw) on boards that don't,
+and sizes the wager (roughly 5-12.5% of stack) according to how large and
+confident the equity difference is.
 
 ### Tradeoffs
 
-- **Speed vs. accuracy**: rollout counts are tuned to stay well within the 10 ms wall-clock limit. Action decisions (1200 rollouts × 5 opponents = most expensive path) complete in ~3–5 ms at -O2 on modern hardware, hence safe to run it in simpler systems. 
-- **Pre-flop categories vs. pure MC**: the pre-flop tiers ensure premium hands build large pots and trash hands fold cost-free, which is the dominant win-rate driver in multi-player games where pre-flop all-ins frequently decide outcomes.
-- **Vote wager sizing**: wagers scale with confidence rather than being fixed, which avoids the chip-bleed of paying aggressively to redraw boards where the equity difference is marginal.
+The bot plays its equity honestly and does not bluff, balance ranges, or model
+individual opponents' tendencies - every opponent is treated as holding a
+uniformly random hand. This keeps the approach robust and hard to get wrong,
+at the cost of being exploitable by opponents that read and counter betting
+patterns. Opponent modelling and bluffing are the natural next extensions.
+
+---
+
+## Test engine
+
+`eval/` contains a self-contained simulation of the Chaos Poker engine, written
+from `RULES.md`, together with a small tournament runner. It is used only for
+offline evaluation of the bot and is not part of the bot itself.
+
+It launches bots as subprocesses, speaks the stdin/stdout protocol, and plays
+full matches, modelling no-limit betting, all-in side pots, blind escalation,
+the swap and vote phases, and showdown. The tournament runner
+(`eval/run_tournament.py`) plays many matches of the bot against a chosen
+opponent pool, rotates the bot's seat each match so blind and position effects
+cancel out, and reports the match win-rate with a 95% confidence interval.
+
+```bash
+python3 eval/run_tournament.py --matches 200 \
+    --test-bot chaos_bot --opponents random_bot random_bot
+```
+
+This engine is a reimplementation of the public rules for local testing, not the
+official harness, so results are relative to this engine and the opponent pool
+rather than absolute. It was useful mainly for confirming that decisions stay
+within the time limit under multi-opponent load and for comparing win-rates
+across opponent counts. 

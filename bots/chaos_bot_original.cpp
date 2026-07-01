@@ -1,17 +1,13 @@
 // Monte Carlo Equity Bot for Chaos Poker
 // 
 //  Strategy: 
-//  ACTION : MC rollouts → equity vs pot odds → fold/call/raise.
+//  ACTION : 1200 MC rollouts → equity vs pot odds → fold/call/raise.
 //           Pre-flop hand categories guide aggression (premiums raise
 //           1.5× pot; trash folds to raises). Pot commitment aware.
-//  SWAP   : MC rollouts per option (keep/swap-0/swap-1).
+//  SWAP   : 300 MC rollouts per option (keep/swap-0/swap-1).
 //           Swaps only when equity gain exceeds cost-scaled threshold.
-//  VOTE   : MC rollouts comparing current board vs expected
+//  VOTE   : 1200 MC rollouts comparing current board vs expected
 //           redraw equity. Wager 5–12.5% of stack scaled to confidence.
-//
-//  Rollout counts are bounded by a per-decision TIME BUDGET (see Deadline)
-//  rather than fixed, so the bot always answers within the 10 ms limit
-//  regardless of opponent count. The decision logic is otherwise unchanged.
 //
 //  Build  : g++ -std=c++17 -O2 -o bots/chaos_bot bots/chaos_bot.cpp
 //  Launch : ./bots/chaos_bot
@@ -24,24 +20,6 @@
 #include <random>
 #include <cstring>
 #include <cstdint>
-#include <chrono>
-
-// Per-decision wall-clock budget. The original bot ran fixed rollout counts
-// (1200/300/1200); under many opponents each decision cost 18-36 ms and blew
-// the 10 ms limit, so the engine auto-folded almost every hand. This caps each
-// MC call by elapsed time instead: rollouts run in batches and stop once the
-// budget is hit. 3 ms leaves wide headroom under 10 ms once IO + scheduling
-// jitter are included.
-using Clock = std::chrono::steady_clock;
-static const double DECISION_BUDGET_MS = 3.0;
-struct Deadline {
-    Clock::time_point t0;
-    double budget_ms;
-    explicit Deadline(double ms) : t0(Clock::now()), budget_ms(ms) {}
-    bool expired() const {
-        return std::chrono::duration<double,std::milli>(Clock::now()-t0).count() >= budget_ms;
-    }
-};
 
 static const int NO_CARD = -1;
 static const int MAX_SEATS = 10;
@@ -108,8 +86,7 @@ uint32_t eval7(const int cards[7]) {
 }
 
 double mc_equity(int h0,int h1,const std::vector<int>&comm,
-                 int num_opp,int n_sims,std::mt19937&rng,
-                 const Deadline* dl=nullptr){
+                 int num_opp,int n_sims,std::mt19937&rng){
     if(num_opp<=0)return 1.0;
     bool used[52]={};
     if(h0!=NO_CARD)used[h0]=true;
@@ -121,12 +98,9 @@ double mc_equity(int h0,int h1,const std::vector<int>&comm,
     int h_need=(h0==NO_CARD?1:0)+(h1==NO_CARD?1:0);
     int need=h_need+(5-csz)+2*num_opp;
     if(need>dsz)return 0.5;
-    int wins=0,ties=0,done=0;
+    int wins=0,ties=0;
     int my7[7],op7[7];
     for(int sim=0;sim<n_sims;++sim){
-        // Stop early if we are out of time. Checked every 64 rollouts so the
-        // clock read costs nothing; n_sims acts only as an upper bound.
-        if(dl && (sim&63)==0 && sim>0 && dl->expired()) break;
         for(int i=0;i<need&&i<dsz-1;++i){
             int j=i+int(rng()%uint32_t(dsz-i));
             int t=deck[i];deck[i]=deck[j];deck[j]=t;
@@ -149,10 +123,8 @@ double mc_equity(int h0,int h1,const std::vector<int>&comm,
         }
         if(my_sc>best_opp)++wins;
         else if(my_sc==best_opp)++ties;
-        ++done;
     }
-    if(done==0)return 0.5;
-    return(wins+0.5*ties)/done;
+    return(wins+0.5*ties)/n_sims;
 }
 
 // Pre-flop hand strength category 
@@ -214,11 +186,9 @@ struct State {
 std::string decide_action(State& s, int chips, int cur_bet,
                           int my_bet, int min_raise, int pot) {
     if (chips <= 0) return "FOLD";
-    Deadline dl(DECISION_BUDGET_MS);
     int    num_opp = std::max(1, s.active_opp());
-    // Count is now an upper bound; the time budget is the real cap.
     double eq      = mc_equity(s.hole[0], s.hole[1], s.community,
-                               num_opp, 1200, s.rng, &dl);
+                               num_opp, 1200, s.rng);
     int    to_call = cur_bet - my_bet;
     double pot_odds= to_call > 0 ? double(to_call)/(pot+to_call) : 0.0;
 
@@ -281,15 +251,9 @@ std::string decide_action(State& s, int chips, int cur_bet,
 std::string decide_swap(State& s, int cost, int chips_avail) {
     int num_opp = std::max(1, s.active_opp());
     const int N = 300;
-    // Three MC calls share the budget; each gets a 1/3 slice so the total
-    // function stays under one decision budget.
-    const double slice = DECISION_BUDGET_MS / 3.0;
-    Deadline d0(slice);
-    double base = mc_equity(s.hole[0], s.hole[1], s.community, num_opp, N, s.rng, &d0);
-    Deadline d1(slice);
-    double e0   = mc_equity(NO_CARD,   s.hole[1], s.community, num_opp, N, s.rng, &d1);
-    Deadline d2(slice);
-    double e1   = mc_equity(s.hole[0], NO_CARD,   s.community, num_opp, N, s.rng, &d2);
+    double base = mc_equity(s.hole[0], s.hole[1], s.community, num_opp, N, s.rng);
+    double e0   = mc_equity(NO_CARD,   s.hole[1], s.community, num_opp, N, s.rng);
+    double e1   = mc_equity(s.hole[0], NO_CARD,   s.community, num_opp, N, s.rng);
     int    best_idx = (e0 >= e1) ? 0 : 1;
     double gain     = std::max(e0, e1) - base;
     double threshold= std::max(0.03, 1.2 * cost / double(chips_avail + 1));
@@ -302,15 +266,12 @@ std::string decide_swap(State& s, int cost, int chips_avail) {
 
 std::string decide_vote(State& s, int chips_avail) {
     int num_opp = std::max(1, s.active_opp());
+    // 1200 rollouts for accurate vote direction (2x more than original)
     const int N = 1200;
-    // Two MC calls -> half the budget each.
-    const double slice = DECISION_BUDGET_MS / 2.0;
-    Deadline d0(slice);
-    double cur_eq = mc_equity(s.hole[0], s.hole[1], s.community, num_opp, N, s.rng, &d0);
+    double cur_eq = mc_equity(s.hole[0], s.hole[1], s.community, num_opp, N, s.rng);
     std::vector<int> prior_comm(s.community.begin(),
                                 s.community.begin() + s.prior_csz);
-    Deadline d1(slice);
-    double rdraw_eq = mc_equity(s.hole[0], s.hole[1], prior_comm, num_opp, N, s.rng, &d1);
+    double rdraw_eq = mc_equity(s.hole[0], s.hole[1], prior_comm, num_opp, N, s.rng);
     double diff     = cur_eq - rdraw_eq;
     const char* side= (diff >= 0) ? "YES" : "NO";
     double conf     = std::abs(diff);
@@ -326,14 +287,6 @@ int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
     State s;
-    // One tiny throwaway rollout warms the hot code path (eval tables, first
-    // allocation) so the opening decision doesn't pay cold-start cost and
-    // time out. Kept small so it doesn't delay reading the first message.
-    {
-        std::vector<int> empty;
-        std::mt19937 warm(12345);
-        mc_equity(0, 4, empty, 2, 200, warm, nullptr);
-    }
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
