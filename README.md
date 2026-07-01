@@ -89,7 +89,7 @@ confident the equity difference is.
 ### Tradeoffs
 
 The bot plays its equity honestly and does not bluff, balance ranges, or model
-individual opponents' tendencies -- every opponent is treated as holding a
+individual opponents' tendencies - every opponent is treated as holding a
 uniformly random hand. This keeps the approach robust and hard to get wrong,
 at the cost of being exploitable by opponents that read and counter betting
 patterns. Opponent modelling and bluffing are the natural next extensions.
